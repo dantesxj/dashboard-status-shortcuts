@@ -1,0 +1,9 @@
+{
+	"ver": 1,
+	"name": "Dashboard Status Shortcuts",
+	"icon": "ti-layout-dashboard",
+	"description": "Unified status bar control: click for a popover of all collections with a custom Dashboard view. Set custom.unifiedDashboardMenu to false for one icon per collection.",
+	"custom": {
+		"unifiedDashboardMenu": true
+	}
+}
