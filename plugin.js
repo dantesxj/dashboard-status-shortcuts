@@ -37,9 +37,20 @@ class Plugin extends AppPlugin {
     }
 
     this._injectCss();
-    await this._refreshAll();
+    // Defer the first full-workspace scan so post-reload Plugin Backend ensure / other plugins
+    // are less likely to stack `getAllCollections` in the same critical window (freeze forensics).
+    const runFirstRefresh = () => this._refreshAll().catch(() => {});
+    try {
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(() => runFirstRefresh(), { timeout: 2200 });
+      } else {
+        setTimeout(runFirstRefresh, 450);
+      }
+    } catch (_) {
+      setTimeout(runFirstRefresh, 450);
+    }
     this._subscribeEvents();
-    setTimeout(() => this._moveAnchorOrItemsToEnd(), 600);
+    setTimeout(() => this._moveAnchorOrItemsToEnd(), 2300);
   }
 
   onUnload() {
@@ -231,6 +242,17 @@ class Plugin extends AppPlugin {
   _moveAnchorOrItemsToEnd() {
     if (this._anchorItem) this._moveItemToEnd(this._anchorItem);
     for (const it of this._statusItems || []) this._moveItemToEnd(it);
+    this._moveSidebarItemToEnd();
+  }
+
+  /** Sidebar rail/collapsed layouts sometimes skip layout until reflow; match status-bar “nudge to end” behavior. */
+  _moveSidebarItemToEnd() {
+    if (!this._sidebarItem) return;
+    try {
+      const el = this._sidebarItem.getElement?.();
+      const p = el?.parentNode;
+      if (el && p && p.lastElementChild !== el) p.appendChild(el);
+    } catch (_) {}
   }
 
   _normalizeStatusIcon(raw) {
@@ -726,6 +748,7 @@ class Plugin extends AppPlugin {
       } catch (e) {
         console.warn('[Dashboard Status] sidebar anchor failed', e);
       }
+      setTimeout(() => this._moveAnchorOrItemsToEnd(), 0);
       return;
     }
 
@@ -748,6 +771,7 @@ class Plugin extends AppPlugin {
         this._moveItemToEnd(item);
       }
     }
+    setTimeout(() => this._moveAnchorOrItemsToEnd(), 0);
   }
 
   _openDashboard(workspaceGuid, collectionGuid, viewId) {
