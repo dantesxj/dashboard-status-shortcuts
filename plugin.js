@@ -39,15 +39,28 @@ class Plugin extends AppPlugin {
     this._injectCss();
     // Defer the first full-workspace scan so post-reload Plugin Backend ensure / other plugins
     // are less likely to stack `getAllCollections` in the same critical window (freeze forensics).
-    const runFirstRefresh = () => this._refreshAll().catch(() => {});
+    try {
+      globalThis.thymerExtEnsureMobileLoadGrace?.();
+      globalThis.thymerExtInstallMobileResumeGrace?.();
+    } catch (_) {}
+    const runFirstRefresh = () => {
+      try {
+        if (typeof globalThis.thymerExtInMobileLoadGrace === 'function' && globalThis.thymerExtInMobileLoadGrace()) {
+          return;
+        }
+      } catch (_) {}
+      this._refreshAll().catch(() => {});
+    };
+    const idleTimeout = this._preferDeferredHeavyWork() ? 14000 : 2200;
+    const fallbackMs = this._preferDeferredHeavyWork() ? 2800 : 450;
     try {
       if (typeof requestIdleCallback === 'function') {
-        requestIdleCallback(() => runFirstRefresh(), { timeout: 2200 });
+        requestIdleCallback(() => runFirstRefresh(), { timeout: idleTimeout });
       } else {
-        setTimeout(runFirstRefresh, 450);
+        setTimeout(runFirstRefresh, fallbackMs);
       }
     } catch (_) {
-      setTimeout(runFirstRefresh, 450);
+      setTimeout(runFirstRefresh, fallbackMs);
     }
     this._subscribeEvents();
     setTimeout(() => this._moveAnchorOrItemsToEnd(), 2300);
@@ -66,6 +79,16 @@ class Plugin extends AppPlugin {
     this._removeDocListeners();
     this._clearAllStatusItems();
     this._refreshSeq++;
+  }
+
+  _preferDeferredHeavyWork() {
+    try {
+      if (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) return true;
+    } catch (_) {}
+    try {
+      return Number(navigator?.maxTouchPoints) > 0;
+    } catch (_) {}
+    return false;
   }
 
   _useUnifiedMenu() {
@@ -209,10 +232,25 @@ class Plugin extends AppPlugin {
   }
 
   _scheduleRefresh() {
+    try {
+      if (typeof globalThis.thymerExtInMobileLoadGrace === 'function' && globalThis.thymerExtInMobileLoadGrace()) {
+        return;
+      }
+    } catch (_) {}
     if (this._refreshTimer) clearTimeout(this._refreshTimer);
     this._refreshTimer = setTimeout(() => {
       this._refreshTimer = null;
-      this._refreshAll().catch(() => {});
+      try {
+        if (typeof globalThis.thymerExtInMobileLoadGrace === 'function' && globalThis.thymerExtInMobileLoadGrace()) {
+          return;
+        }
+      } catch (_) {}
+      const enqueue = typeof globalThis.thymerExtEnqueueHeavyWork === 'function'
+        ? globalThis.thymerExtEnqueueHeavyWork
+        : null;
+      const run = () => this._refreshAll().catch(() => {});
+      if (enqueue) enqueue(run, { delayMs: 1000 });
+      else run();
     }, 400);
   }
 
