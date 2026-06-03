@@ -30,6 +30,7 @@ class Plugin extends AppPlugin {
     this._boundWinScroll = null;
     this._lockObserver = null;
     this._cssInjected = false;
+    this._floatTipEl = null;
 
     if (typeof this.ui?.addStatusBarItem !== 'function') {
       console.warn('[Dashboard Status] addStatusBarItem not available');
@@ -193,6 +194,21 @@ class Plugin extends AppPlugin {
           color: CanvasText;
           box-shadow: inset 0 0 0 1px color-mix(in srgb, Highlight 50%, transparent);
           border-radius: 4px;
+        }
+        .dss-float-tip {
+          position: fixed;
+          z-index: 200001;
+          padding: 4px 8px;
+          border-radius: 6px;
+          border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+          background: color-mix(in srgb, Canvas 88%, transparent);
+          color: CanvasText;
+          font-size: 11px;
+          font-weight: 500;
+          line-height: 1.25;
+          white-space: nowrap;
+          pointer-events: none;
+          box-shadow: 0 2px 10px color-mix(in srgb, CanvasText 16%, transparent);
         }
         .dss-row-ico {
           display: flex;
@@ -529,7 +545,50 @@ class Plugin extends AppPlugin {
     }
   }
 
+  _hideRowTooltip() {
+    try {
+      this._floatTipEl?.remove();
+    } catch (_) {}
+    this._floatTipEl = null;
+  }
+
+  _showRowTooltip(btn, label, side = false) {
+    if (!btn || !label) return;
+    this._hideRowTooltip();
+    const tip = document.createElement('div');
+    tip.className = 'dss-float-tip';
+    tip.textContent = String(label);
+    document.body.appendChild(tip);
+    this._floatTipEl = tip;
+    const margin = 8;
+    const gap = 6;
+    const r = btn.getBoundingClientRect();
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    let left;
+    let top;
+    if (side) {
+      left = r.right + gap;
+      top = r.top + (r.height / 2) - (th / 2);
+    } else {
+      left = r.left + (r.width / 2) - (tw / 2);
+      top = r.top - th - gap;
+    }
+    left = Math.max(margin, Math.min(left, window.innerWidth - tw - margin));
+    top = Math.max(margin, Math.min(top, window.innerHeight - th - margin));
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+  }
+
+  _bindRowTooltip(btn, label, side = false) {
+    const show = () => this._showRowTooltip(btn, label, side);
+    const hide = () => this._hideRowTooltip();
+    btn.addEventListener('mouseenter', show);
+    btn.addEventListener('mouseleave', hide);
+  }
+
   _closePopover() {
+    this._hideRowTooltip();
     this._removeDocListeners();
     try {
       this._popoverEl?.remove();
@@ -586,6 +645,7 @@ class Plugin extends AppPlugin {
         btn.setAttribute('role', 'menuitem');
         btn.title = t.collName;
         btn.setAttribute('aria-label', `Open ${t.collName} dashboard`);
+        this._bindRowTooltip(btn, t.collName, source === 'sidebar');
         const ico = document.createElement('span');
         ico.className = 'dss-row-ico';
         this._appendRowIcon(ico, t.collection, t.viewIconFallback);
@@ -695,6 +755,7 @@ class Plugin extends AppPlugin {
     };
     this._boundWinScroll = () => {
       if (!this._popoverEl) return;
+      this._hideRowTooltip();
       position();
     };
 
@@ -792,12 +853,11 @@ class Plugin extends AppPlugin {
 
     for (const t of this._targets) {
       const icon = t.iconHint || 'ti-dashboard';
-      const tip = `Open Dashboard — ${t.collName}`;
       let item = null;
       try {
         item = this.ui.addStatusBarItem({
           icon,
-          tooltip: tip,
+          tooltip: t.collName,
           onClick: () => this._openDashboard(ws, t.collectionGuid, t.viewId),
         });
       } catch (e) {
