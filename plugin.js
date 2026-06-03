@@ -585,8 +585,6 @@ class Plugin extends AppPlugin {
     const hide = () => this._hideRowTooltip();
     btn.addEventListener('mouseenter', show);
     btn.addEventListener('mouseleave', hide);
-    btn.addEventListener('focus', show);
-    btn.addEventListener('blur', hide);
   }
 
   _closePopover() {
