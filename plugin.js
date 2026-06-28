@@ -24,6 +24,8 @@ class Plugin extends AppPlugin {
     this._refreshSeq = 0;
     this._popoverEl = null;
     this._popoverSource = null;
+    this._vaultScanDone = false;
+    this._refreshInFlight = null;
     this._boundDocMouse = null;
     this._boundDocClick = null;
     this._boundDocKey = null;
@@ -38,51 +40,13 @@ class Plugin extends AppPlugin {
     }
 
     this._injectCss();
-    // Defer the first full-workspace scan so post-reload Plugin Backend ensure / other plugins
-    // are less likely to stack `getAllCollections` in the same critical window (freeze forensics).
     try {
       globalThis.thymerExtEnsureMobileLoadGrace?.();
       globalThis.thymerExtInstallMobileResumeGrace?.();
+      globalThis.thymerExtEnsureStartupStormWindow?.();
     } catch (_) {}
-    const runFirstRefresh = () => {
-      this._refreshAll().catch(() => {});
-    };
-    const scheduleFirstRefresh = () => {
-      const idleTimeout = this._preferDeferredHeavyWork() ? 5000 : 1800;
-      const fallbackMs = this._preferDeferredHeavyWork() ? 550 : 350;
-      const runWhenReady = () => {
-        try {
-          if (typeof requestIdleCallback === 'function') {
-            requestIdleCallback(() => runFirstRefresh(), { timeout: idleTimeout });
-          } else {
-            setTimeout(runFirstRefresh, fallbackMs);
-          }
-        } catch (_) {
-          setTimeout(runFirstRefresh, fallbackMs);
-        }
-      };
-      try {
-        if (typeof globalThis.thymerExtScheduleAfterMobileLoadGrace === 'function') {
-          globalThis.thymerExtScheduleAfterMobileLoadGrace(runWhenReady, { pollMs: 350 });
-          return;
-        }
-        if (typeof globalThis.thymerExtInMobileLoadGrace === 'function' &&
-            globalThis.thymerExtInMobileLoadGrace()) {
-          const started = Date.now();
-          const tick = () => {
-            if (!globalThis.thymerExtInMobileLoadGrace() || Date.now() - started >= 90000) {
-              runWhenReady();
-              return;
-            }
-            setTimeout(tick, 350);
-          };
-          setTimeout(tick, 350);
-          return;
-        }
-      } catch (_) {}
-      runWhenReady();
-    };
-    scheduleFirstRefresh();
+    this._targets = this._buildDashboardTargets([]);
+    this._mountAnchorsFromTargets();
     this._subscribeEvents();
     setTimeout(() => this._moveAnchorOrItemsToEnd(), 900);
   }
@@ -670,6 +634,25 @@ class Plugin extends AppPlugin {
       this._closePopover();
       return;
     }
+    void this._ensureVaultScanThenOpen(ws, source, anchorEl);
+  }
+
+  async _ensureVaultScanThenOpen(ws, source, anchorEl) {
+    if (!this._vaultScanDone) {
+      if (!this._refreshInFlight) {
+        this._refreshInFlight = this._refreshAll()
+          .then(() => {
+            this._vaultScanDone = true;
+          })
+          .catch(() => {})
+          .finally(() => {
+            this._refreshInFlight = null;
+          });
+      }
+      try {
+        await this._refreshInFlight;
+      } catch (_) {}
+    }
     this._openPopover(ws, source, anchorEl);
   }
 
@@ -855,10 +838,15 @@ class Plugin extends AppPlugin {
     if (seq !== this._refreshSeq) return;
 
     this._closePopover();
+    this._targets = this._buildDashboardTargets(collections);
+    this._vaultScanDone = true;
+    this._mountAnchorsFromTargets();
+  }
+
+  _mountAnchorsFromTargets() {
     this._clearAllStatusItems();
 
     const ws = this._workspaceGuid();
-    this._targets = this._buildDashboardTargets(collections);
 
     if (this._useUnifiedMenu()) {
       try {
