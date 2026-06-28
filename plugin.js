@@ -1,11 +1,12 @@
 // ==Plugin==
 // name: Dashboard Status Shortcuts
-// description: Unified status bar control + popover to open each collection's custom Dashboard (auto-discovered).
+// description: Unified status bar control + popover to open plugin dashboards (modal globals + legacy collection views).
 // icon: ti-layout-dashboard
 // ==/Plugin==
 
 /**
- * Global plugin: discovers collections with a custom view labeled "Dashboard".
+ * Global plugin: opens dashboards registered in `globalThis.__thymerExtDashboardOpeners`
+ * (AppPlugin modals) and still discovers collections with a custom view labeled "Dashboard".
  * Default: one status bar anchor (inline SVG) opening an upward frosted popover with a tail
  * toward the anchor; icon rows mirror Today's Notes collection icon resolution.
  * Set `custom.unifiedDashboardMenu` to false in plugin.json to restore one icon per collection.
@@ -44,26 +45,46 @@ class Plugin extends AppPlugin {
       globalThis.thymerExtInstallMobileResumeGrace?.();
     } catch (_) {}
     const runFirstRefresh = () => {
+      this._refreshAll().catch(() => {});
+    };
+    const scheduleFirstRefresh = () => {
+      const idleTimeout = this._preferDeferredHeavyWork() ? 5000 : 1800;
+      const fallbackMs = this._preferDeferredHeavyWork() ? 550 : 350;
+      const runWhenReady = () => {
+        try {
+          if (typeof requestIdleCallback === 'function') {
+            requestIdleCallback(() => runFirstRefresh(), { timeout: idleTimeout });
+          } else {
+            setTimeout(runFirstRefresh, fallbackMs);
+          }
+        } catch (_) {
+          setTimeout(runFirstRefresh, fallbackMs);
+        }
+      };
       try {
-        if (typeof globalThis.thymerExtInMobileLoadGrace === 'function' && globalThis.thymerExtInMobileLoadGrace()) {
+        if (typeof globalThis.thymerExtScheduleAfterMobileLoadGrace === 'function') {
+          globalThis.thymerExtScheduleAfterMobileLoadGrace(runWhenReady, { pollMs: 350 });
+          return;
+        }
+        if (typeof globalThis.thymerExtInMobileLoadGrace === 'function' &&
+            globalThis.thymerExtInMobileLoadGrace()) {
+          const started = Date.now();
+          const tick = () => {
+            if (!globalThis.thymerExtInMobileLoadGrace() || Date.now() - started >= 90000) {
+              runWhenReady();
+              return;
+            }
+            setTimeout(tick, 350);
+          };
+          setTimeout(tick, 350);
           return;
         }
       } catch (_) {}
-      this._refreshAll().catch(() => {});
+      runWhenReady();
     };
-    const idleTimeout = this._preferDeferredHeavyWork() ? 14000 : 2200;
-    const fallbackMs = this._preferDeferredHeavyWork() ? 2800 : 450;
-    try {
-      if (typeof requestIdleCallback === 'function') {
-        requestIdleCallback(() => runFirstRefresh(), { timeout: idleTimeout });
-      } else {
-        setTimeout(runFirstRefresh, fallbackMs);
-      }
-    } catch (_) {
-      setTimeout(runFirstRefresh, fallbackMs);
-    }
+    scheduleFirstRefresh();
     this._subscribeEvents();
-    setTimeout(() => this._moveAnchorOrItemsToEnd(), 2300);
+    setTimeout(() => this._moveAnchorOrItemsToEnd(), 900);
   }
 
   onUnload() {
@@ -405,6 +426,112 @@ class Plugin extends AppPlugin {
     parent.appendChild(i);
   }
 
+  _modalPluginInstance(collName) {
+    const map = {
+      'Contacts Tracker': () => globalThis.__contactsTrackerPlugin,
+      Cs: () => globalThis.__csPlugin,
+      'Psychotherapy Hours': () => globalThis.__psychotherapyHoursPlugin,
+      'BILT Value Tracker': () => globalThis.__biltvValuePlugin,
+      YNAB: () => globalThis.__ynabBusinessPlugin,
+      'Sustainability Hours': () => globalThis.__sustainabilityHoursPlugin,
+    };
+    try {
+      const fn = map[collName];
+      return fn ? fn() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _hasModalDashboard(collName) {
+    try {
+      const reg = globalThis.__thymerExtDashboardOpeners?.[collName];
+      if (reg && typeof reg.open === 'function') return true;
+    } catch (_) {}
+    const p = this._modalPluginInstance(collName);
+    return !!(p && typeof p.openDashboardModal === 'function');
+  }
+
+  _resolveOpenFn(target) {
+    if (!target) return null;
+    if (typeof target.openFn === 'function') return target.openFn;
+    try {
+      const reg = globalThis.__thymerExtDashboardOpeners?.[target.collName];
+      if (reg && typeof reg.open === 'function') return reg.open;
+    } catch (_) {}
+    const p = this._modalPluginInstance(target.collName);
+    if (p && typeof p.openDashboardModal === 'function') {
+      return () => {
+        void p.openDashboardModal();
+      };
+    }
+    return null;
+  }
+
+  _buildDashboardTargets(collections) {
+    const byName = new Map();
+    const list = Array.isArray(collections) ? collections : [];
+    try {
+      const reg = globalThis.__thymerExtDashboardOpeners || {};
+      for (const [collName, entry] of Object.entries(reg)) {
+        if (!entry || typeof entry.open !== 'function') continue;
+        const collection = list.find((c) => String(c.getName?.() || '') === collName) || null;
+        const cfg = collection?.getConfiguration?.() || {};
+        const iconHint = this._normalizeStatusIcon(entry.icon || cfg.icon || 'ti-dashboard');
+        byName.set(collName, {
+          collection,
+          collectionGuid: collection?.getGuid?.(),
+          viewId: null,
+          collName,
+          viewIconFallback: entry.icon || cfg.icon || '',
+          iconHint,
+          openFn: entry.open,
+        });
+      }
+    } catch (_) {}
+    for (const c of list) {
+      try {
+        if (c?.isJournalPlugin?.()) continue;
+      } catch (_) {}
+      const collName = String(c.getName?.() || 'Collection');
+      if (byName.has(collName)) continue;
+      if (this._hasModalDashboard(collName)) continue;
+      const hit = this._findDashboardView(c);
+      if (!hit) continue;
+      const { view, collection } = hit;
+      const cfg = collection.getConfiguration?.() || {};
+      const iconHint = this._normalizeStatusIcon(view.icon || cfg.icon || 'ti-dashboard');
+      byName.set(collName, {
+        collection,
+        collectionGuid: collection.getGuid?.(),
+        viewId: view.id,
+        collName,
+        viewIconFallback: view.icon || cfg.icon || '',
+        iconHint,
+        openFn: null,
+      });
+    }
+    return Array.from(byName.values()).sort((a, b) =>
+      String(a.collName || '').localeCompare(String(b.collName || ''), undefined, {
+        sensitivity: 'base',
+      })
+    );
+  }
+
+  _openTarget(ws, target) {
+    if (!target) return;
+    const openFn = this._resolveOpenFn(target);
+    if (typeof openFn === 'function') {
+      try {
+        openFn();
+      } catch (e) {
+        console.warn('[Dashboard Status] modal open failed', target.collName, e);
+      }
+      return;
+    }
+    this._openDashboard(ws, target.collectionGuid, target.viewId);
+  }
+
   _findDashboardView(collection) {
     let cfg = null;
     try {
@@ -575,7 +702,7 @@ class Plugin extends AppPlugin {
       const empty = document.createElement('div');
       empty.style.cssText =
         'padding:10px 12px;opacity:0.72;font-size:12px;text-align:center;cursor:default;width:100%;';
-      empty.textContent = 'No custom Dashboard views found.';
+      empty.textContent = 'No dashboards found.';
       rowsWrap.appendChild(empty);
     } else {
       for (let i = 0; i < list.length; i++) {
@@ -594,7 +721,7 @@ class Plugin extends AppPlugin {
           ev.preventDefault();
           ev.stopPropagation();
           this._closePopover();
-          this._openDashboard(ws, t.collectionGuid, t.viewId);
+          this._openTarget(ws, t);
         });
         rowsWrap.appendChild(btn);
       }
@@ -730,37 +857,8 @@ class Plugin extends AppPlugin {
     this._closePopover();
     this._clearAllStatusItems();
 
-    const hits = [];
-    for (const c of collections) {
-      try {
-        if (c?.isJournalPlugin?.()) continue;
-      } catch (_) {}
-      const hit = this._findDashboardView(c);
-      if (hit) hits.push(hit);
-    }
-
-    hits.sort((a, b) =>
-      String(a.collection.getName?.() || '').localeCompare(String(b.collection.getName?.() || ''), undefined, {
-        sensitivity: 'base',
-      })
-    );
-
     const ws = this._workspaceGuid();
-
-    this._targets = hits.map(({ view, collection }) => {
-      const cfg = collection.getConfiguration?.() || {};
-      const iconHint = this._normalizeStatusIcon(
-        view.icon || cfg.icon || 'ti-dashboard'
-      );
-      return {
-        collection,
-        collectionGuid: collection.getGuid?.(),
-        viewId: view.id,
-        collName: collection.getName?.() || 'Collection',
-        viewIconFallback: view.icon || cfg.icon || '',
-        iconHint,
-      };
-    });
+    this._targets = this._buildDashboardTargets(collections);
 
     if (this._useUnifiedMenu()) {
       try {
@@ -798,7 +896,7 @@ class Plugin extends AppPlugin {
         item = this.ui.addStatusBarItem({
           icon,
           tooltip: tip,
-          onClick: () => this._openDashboard(ws, t.collectionGuid, t.viewId),
+          onClick: () => this._openTarget(ws, t),
         });
       } catch (e) {
         console.warn('[Dashboard Status] addStatusBarItem failed', t.collName, e);
